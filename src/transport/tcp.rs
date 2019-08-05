@@ -14,71 +14,97 @@ use crate::interceptor::PacketInterceptor;
 use crate::transport::{JetFuture, JetSink, JetSinkType, JetStream, JetStreamType, Transport};
 use crate::utils::url_to_socket_arr;
 
-pub enum TcpStreamWrapper {
-    Plain(TcpStream),
-    Tls(TlsStream<TcpStream>),
+trait StreamWrapper: AsyncRead + AsyncWrite + Read + Write {
+    fn peer_addr(&self) -> std::io::Result<SocketAddr>;
+    fn shutdown(&self) -> std::io::Result<()>;
+    fn async_shutdown(&mut self) -> Result<Async<()>, std::io::Error>;
 }
 
-impl TcpStreamWrapper {
-    fn peer_addr(&self) -> Option<SocketAddr> {
-        match self {
-            TcpStreamWrapper::Plain(stream) => stream.peer_addr().ok(),
-            TcpStreamWrapper::Tls(stream) => stream.get_ref().get_ref().peer_addr().ok(),
-        }
+struct PlainTcpStreamWrapper {
+    stream: TcpStream,
+}
+
+struct TlsTcpStreamWrapper {
+    stream: TlsStream<TcpStream>,
+}
+
+impl StreamWrapper for PlainTcpStreamWrapper {
+    fn peer_addr(&self) -> std::io::Result<SocketAddr> {
+        self.stream.peer_addr()
     }
 
-    pub fn shutdown(&self) -> std::io::Result<()> {
-        match self {
-            TcpStreamWrapper::Plain(stream) => TcpStream::shutdown(stream, std::net::Shutdown::Both),
-            TcpStreamWrapper::Tls(stream) => stream.get_ref().get_ref().shutdown(std::net::Shutdown::Both),
-        }
+    fn shutdown(&self) -> std::io::Result<()> {
+        TcpStream::shutdown(&self.stream, std::net::Shutdown::Both)
     }
 
-    pub fn async_shutdown(&mut self) -> Result<Async<()>, std::io::Error> {
-        match self {
-            TcpStreamWrapper::Plain(stream) => AsyncWrite::shutdown(stream),
-            TcpStreamWrapper::Tls(stream) => AsyncWrite::shutdown(stream),
-        }
+    fn async_shutdown(&mut self) -> Result<Async<()>, std::io::Error> {
+        AsyncWrite::shutdown(&mut self.stream)
     }
 }
 
-impl Read for TcpStreamWrapper {
+impl StreamWrapper for TlsTcpStreamWrapper {
+    fn peer_addr(&self) -> std::io::Result<SocketAddr> {
+        self.stream.get_ref().get_ref().peer_addr()
+    }
+
+    fn shutdown(&self) -> std::io::Result<()> {
+        self.stream.get_ref().get_ref().shutdown(std::net::Shutdown::Both)
+    }
+
+    fn async_shutdown(&mut self) -> Result<Async<()>, std::io::Error> {
+        AsyncWrite::shutdown(&mut self.stream)
+    }
+}
+
+impl Read for PlainTcpStreamWrapper {
     fn read(&mut self, mut buf: &mut [u8]) -> io::Result<usize> {
-        match *self {
-            TcpStreamWrapper::Plain(ref mut stream) => stream.read(&mut buf),
-            TcpStreamWrapper::Tls(ref mut stream) => stream.read(&mut buf),
-        }
+        self.stream.read(&mut buf)
     }
 }
 
-impl Write for TcpStreamWrapper {
+impl Read for TlsTcpStreamWrapper {
+    fn read(&mut self, mut buf: &mut [u8]) -> io::Result<usize> {
+        self.stream.read(&mut buf)
+    }
+}
+
+impl Write for PlainTcpStreamWrapper {
     fn write(&mut self, buf: &[u8]) -> io::Result<usize> {
-        match *self {
-            TcpStreamWrapper::Plain(ref mut stream) => stream.write(&buf),
-            TcpStreamWrapper::Tls(ref mut stream) => stream.write(&buf),
-        }
+        self.stream.write(&buf)
     }
     fn flush(&mut self) -> io::Result<()> {
-        match *self {
-            TcpStreamWrapper::Plain(ref mut stream) => stream.flush(),
-            TcpStreamWrapper::Tls(ref mut stream) => stream.flush(),
-        }
+        self.stream.flush()
     }
 }
 
-impl AsyncRead for TcpStreamWrapper {}
+impl Write for TlsTcpStreamWrapper {
+    fn write(&mut self, buf: &[u8]) -> io::Result<usize> {
+        self.stream.write(&buf)
+    }
 
-impl AsyncWrite for TcpStreamWrapper {
+    fn flush(&mut self) -> io::Result<()> {
+        self.stream.flush()
+    }
+}
+
+impl AsyncRead for PlainTcpStreamWrapper {}
+
+impl AsyncRead for TlsTcpStreamWrapper {}
+
+impl AsyncWrite for PlainTcpStreamWrapper {
     fn shutdown(&mut self) -> Result<Async<()>, std::io::Error> {
-        match *self {
-            TcpStreamWrapper::Plain(ref mut stream) => AsyncWrite::shutdown(stream),
-            TcpStreamWrapper::Tls(ref mut stream) => AsyncWrite::shutdown(stream),
-        }
+        AsyncWrite::shutdown(&mut self.stream)
+    }
+}
+
+impl AsyncWrite for TlsTcpStreamWrapper {
+    fn shutdown(&mut self) -> Result<Async<()>, std::io::Error> {
+        AsyncWrite::shutdown(&mut self.stream)
     }
 }
 
 pub struct TcpTransport {
-    stream: Arc<Mutex<TcpStreamWrapper>>,
+    stream: Arc<Mutex<StreamWrapper + Send>>,
 }
 
 impl Clone for TcpTransport {
@@ -92,13 +118,13 @@ impl Clone for TcpTransport {
 impl TcpTransport {
     pub fn new(stream: TcpStream) -> Self {
         TcpTransport {
-            stream: Arc::new(Mutex::new(TcpStreamWrapper::Plain(stream))),
+            stream: Arc::new(Mutex::new(PlainTcpStreamWrapper { stream })),
         }
     }
 
     pub fn new_tls(stream: TlsStream<TcpStream>) -> Self {
         TcpTransport {
-            stream: Arc::new(Mutex::new(TcpStreamWrapper::Tls(stream))),
+            stream: Arc::new(Mutex::new(TlsTcpStreamWrapper { stream })),
         }
     }
 }
@@ -182,13 +208,13 @@ impl Transport for TcpTransport {
 pub const TCP_READ_LEN: usize = 57343;
 
 struct TcpJetStream {
-    stream: Arc<Mutex<TcpStreamWrapper>>,
+    stream: Arc<Mutex<StreamWrapper + Send>>,
     nb_bytes_read: u64,
     packet_interceptor: Option<Box<dyn PacketInterceptor>>,
 }
 
 impl TcpJetStream {
-    fn new(stream: Arc<Mutex<TcpStreamWrapper>>) -> Self {
+    fn new(stream: Arc<Mutex<StreamWrapper + Send>>) -> Self {
         TcpJetStream {
             stream,
             nb_bytes_read: 0,
@@ -282,12 +308,12 @@ impl JetStream for TcpJetStream {
 }
 
 struct TcpJetSink {
-    stream: Arc<Mutex<TcpStreamWrapper>>,
+    stream: Arc<Mutex<StreamWrapper + Send>>,
     nb_bytes_written: u64,
 }
 
 impl TcpJetSink {
-    fn new(stream: Arc<Mutex<TcpStreamWrapper>>) -> Self {
+    fn new(stream: Arc<Mutex<StreamWrapper + Send>>) -> Self {
         TcpJetSink {
             stream,
             nb_bytes_written: 0,
