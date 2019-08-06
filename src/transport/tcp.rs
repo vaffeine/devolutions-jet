@@ -20,15 +20,15 @@ trait StreamWrapper: AsyncRead + AsyncWrite + Read + Write {
     fn async_shutdown(&mut self) -> Result<Async<()>, std::io::Error>;
 }
 
-struct PlainTcpStreamWrapper {
+struct TcpStreamWrapper {
     stream: TcpStream,
 }
 
-struct TlsTcpStreamWrapper {
+struct TlsStreamWrapper {
     stream: TlsStream<TcpStream>,
 }
 
-impl StreamWrapper for PlainTcpStreamWrapper {
+impl StreamWrapper for TcpStreamWrapper {
     fn peer_addr(&self) -> std::io::Result<SocketAddr> {
         self.stream.peer_addr()
     }
@@ -42,7 +42,7 @@ impl StreamWrapper for PlainTcpStreamWrapper {
     }
 }
 
-impl StreamWrapper for TlsTcpStreamWrapper {
+impl StreamWrapper for TlsStreamWrapper {
     fn peer_addr(&self) -> std::io::Result<SocketAddr> {
         self.stream.get_ref().get_ref().peer_addr()
     }
@@ -56,19 +56,19 @@ impl StreamWrapper for TlsTcpStreamWrapper {
     }
 }
 
-impl Read for PlainTcpStreamWrapper {
+impl Read for TcpStreamWrapper {
     fn read(&mut self, mut buf: &mut [u8]) -> io::Result<usize> {
         self.stream.read(&mut buf)
     }
 }
 
-impl Read for TlsTcpStreamWrapper {
+impl Read for TlsStreamWrapper {
     fn read(&mut self, mut buf: &mut [u8]) -> io::Result<usize> {
         self.stream.read(&mut buf)
     }
 }
 
-impl Write for PlainTcpStreamWrapper {
+impl Write for TcpStreamWrapper {
     fn write(&mut self, buf: &[u8]) -> io::Result<usize> {
         self.stream.write(&buf)
     }
@@ -77,7 +77,7 @@ impl Write for PlainTcpStreamWrapper {
     }
 }
 
-impl Write for TlsTcpStreamWrapper {
+impl Write for TlsStreamWrapper {
     fn write(&mut self, buf: &[u8]) -> io::Result<usize> {
         self.stream.write(&buf)
     }
@@ -87,17 +87,17 @@ impl Write for TlsTcpStreamWrapper {
     }
 }
 
-impl AsyncRead for PlainTcpStreamWrapper {}
+impl AsyncRead for TcpStreamWrapper {}
 
-impl AsyncRead for TlsTcpStreamWrapper {}
+impl AsyncRead for TlsStreamWrapper {}
 
-impl AsyncWrite for PlainTcpStreamWrapper {
+impl AsyncWrite for TcpStreamWrapper {
     fn shutdown(&mut self) -> Result<Async<()>, std::io::Error> {
         AsyncWrite::shutdown(&mut self.stream)
     }
 }
 
-impl AsyncWrite for TlsTcpStreamWrapper {
+impl AsyncWrite for TlsStreamWrapper {
     fn shutdown(&mut self) -> Result<Async<()>, std::io::Error> {
         AsyncWrite::shutdown(&mut self.stream)
     }
@@ -118,13 +118,13 @@ impl Clone for TcpTransport {
 impl TcpTransport {
     pub fn new(stream: TcpStream) -> Self {
         TcpTransport {
-            stream: Arc::new(Mutex::new(PlainTcpStreamWrapper { stream })),
+            stream: Arc::new(Mutex::new(TcpStreamWrapper { stream })),
         }
     }
 
     pub fn new_tls(stream: TlsStream<TcpStream>) -> Self {
         TcpTransport {
-            stream: Arc::new(Mutex::new(TlsTcpStreamWrapper { stream })),
+            stream: Arc::new(Mutex::new(TlsStreamWrapper { stream })),
         }
     }
 }
