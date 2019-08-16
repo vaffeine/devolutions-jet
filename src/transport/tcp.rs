@@ -140,8 +140,8 @@ impl AsyncWrite for TcpTransport {
 
 impl Transport for TcpTransport {
     fn connect(url: &Url) -> JetFuture<Self>
-        where
-            Self: Sized,
+    where
+        Self: Sized,
     {
         let socket_addr = url_to_socket_arr(&url);
         match url.scheme() {
@@ -207,9 +207,8 @@ impl Stream for TcpJetStream {
             while result.len() <= TCP_READ_LEN {
                 let mut buffer = [0u8; 8192];
                 match stream.poll_read(&mut buffer) {
-
                     Ok(Async::Ready(0)) => {
-                        if result.len() > 0 {
+                        if !result.is_empty() {
                             if let Some(interceptor) = self.packet_interceptor.as_mut() {
                                 interceptor.on_new_packet(stream.peer_addr(), &result);
                             }
@@ -217,8 +216,8 @@ impl Stream for TcpJetStream {
                             return Ok(Async::Ready(Some(result)));
                         }
 
-                        return Ok(Async::Ready(None))
-                    },
+                        return Ok(Async::Ready(None));
+                    }
 
                     Ok(Async::Ready(len)) => {
                         self.nb_bytes_read += len as u64;
@@ -238,8 +237,7 @@ impl Stream for TcpJetStream {
                     }
 
                     Ok(Async::NotReady) => {
-
-                        if result.len() > 0 {
+                        if !result.is_empty() {
                             if let Some(interceptor) = self.packet_interceptor.as_mut() {
                                 interceptor.on_new_packet(stream.peer_addr(), &result);
                             }
@@ -247,8 +245,8 @@ impl Stream for TcpJetStream {
                             return Ok(Async::Ready(Some(result)));
                         }
 
-                        return Ok(Async::NotReady)
-                    },
+                        return Ok(Async::NotReady);
+                    }
 
                     Err(e) => {
                         error!("Can't read on socket: {}", e);

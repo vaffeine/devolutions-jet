@@ -1,5 +1,6 @@
 use crate::interceptor::PacketInterceptor;
 use crate::transport::tcp::TcpTransport;
+use crate::transport::ws::WsTransport;
 use futures::{Async, Future, Sink, Stream};
 use std::io::{Read, Write};
 use std::net::SocketAddr;
@@ -7,13 +8,12 @@ use tokio::io;
 use tokio_io::{AsyncRead, AsyncWrite};
 use tokio_tcp::TcpStream;
 use url::Url;
-use crate::transport::ws::WsTransport;
 
 pub mod mcs;
 pub mod tcp;
 pub mod tsrequest;
-pub mod x224;
 pub mod ws;
+pub mod x224;
 
 pub type JetFuture<T> = Box<dyn Future<Item = T, Error = io::Error> + Send>;
 pub type JetStreamType<T> = Box<dyn JetStream<Item = T, Error = io::Error> + Send>;
@@ -30,7 +30,6 @@ pub trait Transport {
 pub enum JetTransport {
     Tcp(TcpTransport),
     Ws(WsTransport),
-
 }
 
 impl JetTransport {
