@@ -104,7 +104,7 @@ impl AsyncWrite for TlsStreamWrapper {
 }
 
 pub struct TcpTransport {
-    stream: Arc<Mutex<StreamWrapper + Send>>,
+    stream: Arc<Mutex<dyn StreamWrapper + Send>>,
 }
 
 impl Clone for TcpTransport {
@@ -208,13 +208,13 @@ impl Transport for TcpTransport {
 pub const TCP_READ_LEN: usize = 57343;
 
 struct TcpJetStream {
-    stream: Arc<Mutex<StreamWrapper + Send>>,
+    stream: Arc<Mutex<dyn StreamWrapper + Send>>,
     nb_bytes_read: u64,
     packet_interceptor: Option<Box<dyn PacketInterceptor>>,
 }
 
 impl TcpJetStream {
-    fn new(stream: Arc<Mutex<StreamWrapper + Send>>) -> Self {
+    fn new(stream: Arc<Mutex<dyn StreamWrapper + Send>>) -> Self {
         TcpJetStream {
             stream,
             nb_bytes_read: 0,
@@ -276,9 +276,9 @@ impl Stream for TcpJetStream {
                         if !result.is_empty() {
                             if let Some(interceptor) = self.packet_interceptor.as_mut() {
                                 let peer_addr = match stream.peer_addr() {
-                                Ok(addr) => Some(addr),
-                                _ => None,
-                            };
+                                    Ok(addr) => Some(addr),
+                                    _ => None,
+                                };
 
                                 interceptor.on_new_packet(peer_addr, &result);
                             }
@@ -327,12 +327,12 @@ impl JetStream for TcpJetStream {
 }
 
 struct TcpJetSink {
-    stream: Arc<Mutex<StreamWrapper + Send>>,
+    stream: Arc<Mutex<dyn StreamWrapper + Send>>,
     nb_bytes_written: u64,
 }
 
 impl TcpJetSink {
-    fn new(stream: Arc<Mutex<StreamWrapper + Send>>) -> Self {
+    fn new(stream: Arc<Mutex<dyn StreamWrapper + Send>>) -> Self {
         TcpJetSink {
             stream,
             nb_bytes_written: 0,
