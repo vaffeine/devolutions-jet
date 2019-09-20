@@ -42,8 +42,7 @@ fn run_client() -> Child {
         .args(&["--username", PROXY_CREDENTIALS.username.as_str()])
         .args(&["--password", PROXY_CREDENTIALS.password.as_str()]);
 
-    client_command.spawn().expect("failed to run IronRDP client")
-}
+    client_command.spawn().expect("failed to run IronRDP client") }
 
 #[test]
 fn rdp_with_nla_ntlm() {

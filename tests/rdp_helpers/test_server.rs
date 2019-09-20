@@ -11,17 +11,19 @@ use ironrdp::{
     gcc, mcs,
     nego::{Request, Response, ResponseData, ResponseFlags, SecurityProtocol},
     rdp::{self, capability_sets},
-    ClientConfirmActive, ClientInfoPdu, ConnectInitial, ConnectResponse, Data, McsPdu, PduParsing, SendDataContext,
-    ServerDemandActive, ServerLicensePdu, ShareControlHeader,
+    ClientConfirmActive, ClientInfoPdu, ConnectInitial, ConnectResponse, McsPdu, PduParsing, ServerDemandActive,
+    ServerLicensePdu,
 };
 use native_tls::{TlsAcceptor, TlsStream};
 use sspi::CredSsp;
 
 use super::{
-    IdentitiesProxy, CERT_PKCS12_PASS, CLIENT_IP_ADDR, MCS_INITIATOR_ID, MCS_IO_CHANNEL_ID,
-    MCS_STATIC_CHANNELS_START_ID, SERVER_PDU_SOURCE, SHARE_ID, TLS_PUBLIC_KEY_HEADER,
+    process_cred_ssp_phase_with_reply_needed, read_finalization_pdu, read_send_data_context_pdu, read_x224_data_pdu,
+    write_finalization_pdu, write_send_data_context_pdu, write_x224_data_pdu, IdentitiesProxy, CERT_PKCS12_PASS,
+    CLIENT_IP_ADDR, MCS_INITIATOR_ID, MCS_IO_CHANNEL_ID, MCS_STATIC_CHANNELS_START_ID, SERVER_PDU_SOURCE, SHARE_ID,
+    TLS_PUBLIC_KEY_HEADER,
 };
-use crate::{SERVER_CREDENTIALS, CERT_PKCS12_DER};
+use crate::{CERT_PKCS12_DER, SERVER_CREDENTIALS};
 
 pub struct RdpServer {
     routing_addr: &'static str,
@@ -46,8 +48,7 @@ impl RdpServer {
         let client_color_depth = self.mcs(&mut tls_stream);
 
         self.read_client_info(&mut tls_stream);
-
-        self.write_server_license(&mut tls_stream);
+        self.write_server_no_license_response(&mut tls_stream);
 
         let client_pdu_source = self.capabilities_exchange(&mut tls_stream, client_color_depth);
 
@@ -294,8 +295,7 @@ impl RdpServer {
 
     fn read_client_info(&self, stream: &mut TlsStream<TcpStream>) {
         let mut buffer = read_stream_buffer(stream);
-        let client_info =
-            read_and_parse_send_data_context_pdu::<ClientInfoPdu>(&mut buffer, MCS_INITIATOR_ID, MCS_IO_CHANNEL_ID);
+        let client_info = read_send_data_context_pdu::<ClientInfoPdu>(&mut buffer, MCS_INITIATOR_ID, MCS_IO_CHANNEL_ID);
 
         let expected_address_family = match CLIENT_IP_ADDR {
             IpAddr::V4(_) => rdp::AddressFamily::INet,
@@ -311,7 +311,7 @@ impl RdpServer {
         assert_eq!(client_info.client_info.extra_info.address, expected_address);
     }
 
-    fn write_server_license(&self, mut tls_stream: &mut TlsStream<TcpStream>) {
+    fn write_server_no_license_response(&self, mut tls_stream: &mut TlsStream<TcpStream>) {
         let pdu = ServerLicensePdu {
             security_header: rdp::BasicSecurityHeader {
                 flags: rdp::BasicSecurityHeaderFlags::LICENSE_PKT,
@@ -332,7 +332,7 @@ impl RdpServer {
                 },
             },
         };
-        encode_and_write_send_data_context_pdu(pdu, MCS_INITIATOR_ID, MCS_IO_CHANNEL_ID, &mut tls_stream);
+        write_send_data_context_pdu(pdu, MCS_INITIATOR_ID, MCS_IO_CHANNEL_ID, &mut tls_stream);
     }
 
     fn write_demand_active(
@@ -392,16 +392,13 @@ impl RdpServer {
         };
         let pdu = rdp::ShareControlPdu::ServerDemandActive(demand_active);
         let header = rdp::ShareControlHeader::new(pdu, SERVER_PDU_SOURCE, SHARE_ID);
-        encode_and_write_send_data_context_pdu(header, MCS_INITIATOR_ID, MCS_IO_CHANNEL_ID, &mut tls_stream);
+        write_send_data_context_pdu(header, MCS_INITIATOR_ID, MCS_IO_CHANNEL_ID, &mut tls_stream);
     }
 
     fn read_confirm_active(&self, tls_stream: &mut TlsStream<TcpStream>) -> u16 {
         let mut buffer = read_stream_buffer(tls_stream);
-        let mut share_control_header = read_and_parse_send_data_context_pdu::<rdp::ShareControlHeader>(
-            &mut buffer,
-            MCS_INITIATOR_ID,
-            MCS_IO_CHANNEL_ID,
-        );
+        let mut share_control_header =
+            read_send_data_context_pdu::<rdp::ShareControlHeader>(&mut buffer, MCS_INITIATOR_ID, MCS_IO_CHANNEL_ID);
         if share_control_header.share_id != SHARE_ID {
             panic!(
                 "Unexpected Client Confirm Active Share Control Header PDU share ID: {} != {}",
@@ -438,7 +435,7 @@ impl RdpServer {
 
     fn read_synchronize_pdu(&self, tls_stream: &mut TlsStream<TcpStream>) {
         let mut buffer = read_stream_buffer(tls_stream);
-        let share_data_pdu = read_and_parse_finalization_pdu(&mut buffer, MCS_INITIATOR_ID, MCS_IO_CHANNEL_ID);
+        let share_data_pdu = read_finalization_pdu(&mut buffer, MCS_INITIATOR_ID, MCS_IO_CHANNEL_ID);
 
         if let rdp::ShareDataPdu::Synchronize(rdp::SynchronizePdu { target_user_id }) = share_data_pdu {
             if target_user_id != MCS_INITIATOR_ID {
@@ -457,12 +454,12 @@ impl RdpServer {
 
     fn write_synchronize_pdu(&self, mut tls_stream: &mut TlsStream<TcpStream>, client_pdu_source: u16) {
         let pdu = rdp::ShareDataPdu::Synchronize(rdp::SynchronizePdu::new(client_pdu_source));
-        encode_and_write_finalization_pdu(pdu, MCS_INITIATOR_ID, MCS_IO_CHANNEL_ID, &mut tls_stream);
+        write_finalization_pdu(pdu, MCS_INITIATOR_ID, MCS_IO_CHANNEL_ID, &mut tls_stream);
     }
 
     fn read_control_pdu_cooperate(&self, tls_stream: &mut TlsStream<TcpStream>) {
         let mut buffer = read_stream_buffer(tls_stream);
-        let share_data_pdu = read_and_parse_finalization_pdu(&mut buffer, MCS_INITIATOR_ID, MCS_IO_CHANNEL_ID);
+        let share_data_pdu = read_finalization_pdu(&mut buffer, MCS_INITIATOR_ID, MCS_IO_CHANNEL_ID);
 
         if let rdp::ShareDataPdu::Control(rdp::ControlPdu {
             action,
@@ -489,12 +486,12 @@ impl RdpServer {
 
     fn write_control_pdu_cooperate(&self, mut tls_stream: &mut TlsStream<TcpStream>) {
         let pdu = rdp::ShareDataPdu::Control(rdp::ControlPdu::new(rdp::ControlAction::Cooperate, 0, 0));
-        encode_and_write_finalization_pdu(pdu, MCS_INITIATOR_ID, MCS_IO_CHANNEL_ID, &mut tls_stream);
+        write_finalization_pdu(pdu, MCS_INITIATOR_ID, MCS_IO_CHANNEL_ID, &mut tls_stream);
     }
 
     fn read_request_control_pdu(&self, tls_stream: &mut TlsStream<TcpStream>) {
         let mut buffer = read_stream_buffer(tls_stream);
-        let share_data_pdu = read_and_parse_finalization_pdu(&mut buffer, MCS_INITIATOR_ID, MCS_IO_CHANNEL_ID);
+        let share_data_pdu = read_finalization_pdu(&mut buffer, MCS_INITIATOR_ID, MCS_IO_CHANNEL_ID);
 
         if let rdp::ShareDataPdu::Control(rdp::ControlPdu {
             action,
@@ -525,12 +522,12 @@ impl RdpServer {
             MCS_INITIATOR_ID,
             u32::from(SERVER_PDU_SOURCE),
         ));
-        encode_and_write_finalization_pdu(pdu, MCS_INITIATOR_ID, MCS_IO_CHANNEL_ID, &mut tls_stream);
+        write_finalization_pdu(pdu, MCS_INITIATOR_ID, MCS_IO_CHANNEL_ID, &mut tls_stream);
     }
 
     fn read_font_list(&self, tls_stream: &mut TlsStream<TcpStream>) {
         let mut buffer = read_stream_buffer(tls_stream);
-        let share_data_pdu = read_and_parse_finalization_pdu(&mut buffer, MCS_INITIATOR_ID, MCS_IO_CHANNEL_ID);
+        let share_data_pdu = read_finalization_pdu(&mut buffer, MCS_INITIATOR_ID, MCS_IO_CHANNEL_ID);
 
         match share_data_pdu {
             rdp::ShareDataPdu::FontList(_) => (),
@@ -548,162 +545,8 @@ impl RdpServer {
             rdp::SequenceFlags::FIRST | rdp::SequenceFlags::LAST,
             4,
         ));
-        encode_and_write_finalization_pdu(pdu, MCS_INITIATOR_ID, MCS_IO_CHANNEL_ID, &mut tls_stream);
+        write_finalization_pdu(pdu, MCS_INITIATOR_ID, MCS_IO_CHANNEL_ID, &mut tls_stream);
     }
-}
-
-fn process_cred_ssp_phase_with_reply_needed(
-    ts_request: sspi::TsRequest,
-    cred_ssp_context: &mut impl sspi::CredSsp,
-    tls_stream: &mut (impl io::Write + io::Read),
-) {
-    let reply = cred_ssp_context
-        .process(ts_request)
-        .expect("failed to process CredSSP phase");
-    match reply {
-        sspi::CredSspResult::ReplyNeeded(ts_request) => {
-            let mut ts_request_buffer = Vec::with_capacity(ts_request.buffer_len() as usize);
-            ts_request
-                .encode_ts_request(&mut ts_request_buffer)
-                .expect("failed to encode TSRequest");
-
-            tls_stream
-                .write_all(&ts_request_buffer)
-                .expect("failed to send CredSSP message");
-        }
-        _ => panic!("the CredSSP server has returned unexpected result: {:?}", reply),
-    }
-}
-
-fn read_x224_data_pdu<T>(buffer: &mut BytesMut) -> T
-where
-    T: PduParsing,
-    T::Error: fmt::Debug,
-{
-    let data_pdu = Data::from_buffer(buffer.as_ref()).expect("failed to read X224 Data");
-    buffer.split_to(data_pdu.buffer_length() - data_pdu.data_length);
-    let pdu = T::from_buffer(buffer.as_ref()).expect("failed to decode X224 Data");
-    buffer.split_to(data_pdu.data_length);
-
-    pdu
-}
-
-fn write_x224_data_pdu<T>(pdu: T, mut stream: impl io::Write)
-where
-    T: PduParsing,
-    T::Error: fmt::Debug,
-{
-    Data::new(pdu.buffer_length())
-        .to_buffer(&mut stream)
-        .expect("failed to write X224 Data");
-    pdu.to_buffer(&mut stream).expect("failed to encode X224 Data");
-}
-
-fn read_and_parse_send_data_context_pdu<T>(
-    mut buffer: &mut BytesMut,
-    expected_initiator_id: u16,
-    expected_channel_id: u16,
-) -> T
-where
-    T: PduParsing,
-    T::Error: fmt::Debug,
-{
-    match read_x224_data_pdu::<McsPdu>(&mut buffer) {
-        mcs::McsPdu::SendDataRequest(send_data_context) => {
-            if send_data_context.initiator_id != expected_initiator_id {
-                panic!(
-                    "Unexpected Send Data Context PDU initiator ID: {} != {}",
-                    expected_initiator_id, send_data_context.initiator_id
-                );
-            }
-            if send_data_context.channel_id != expected_channel_id {
-                panic!(
-                    "Unexpected Send Data Context PDU channel ID: {} != {}",
-                    expected_channel_id, send_data_context.channel_id
-                );
-            }
-
-            T::from_buffer(send_data_context.pdu.as_slice()).expect("failed to decode Send Data Context PDU")
-        }
-        pdu => panic!(
-            "Got unexpected MCS PDU, while was expected Channel Join Confirm PDU: {:?}",
-            pdu
-        ),
-    }
-}
-
-fn encode_and_write_send_data_context_pdu<T>(pdu: T, initiator_id: u16, channel_id: u16, mut stream: impl io::Write)
-where
-    T: PduParsing,
-    T::Error: fmt::Debug,
-{
-    let mut pdu_buffer = Vec::with_capacity(pdu.buffer_length());
-    pdu.to_buffer(&mut pdu_buffer)
-        .expect("failed to encode Send Data Context PDU");
-
-    let send_data_context_pdu = SendDataContext::new(pdu_buffer, initiator_id, channel_id);
-
-    write_x224_data_pdu(McsPdu::SendDataIndication(send_data_context_pdu), &mut stream);
-}
-
-fn read_and_parse_finalization_pdu(
-    mut buffer: &mut BytesMut,
-    expected_initiator_id: u16,
-    expected_channel_id: u16,
-) -> rdp::ShareDataPdu {
-    let share_control_header = read_and_parse_send_data_context_pdu::<ShareControlHeader>(
-        &mut buffer,
-        expected_initiator_id,
-        expected_channel_id,
-    );
-    if share_control_header.share_id != SHARE_ID {
-        panic!(
-            "Got unexpected Share ID for Finalization PDU: {} != {}",
-            SHARE_ID, share_control_header.share_id
-        );
-    }
-
-    if let rdp::ShareControlPdu::Data(rdp::ShareDataHeader {
-        share_data_pdu,
-        compression_flags,
-        ..
-    }) = share_control_header.share_control_pdu
-    {
-        if compression_flags != rdp::CompressionFlags::empty() {
-            panic!(
-                "Unexpected Compression Flags in Share Data Header PDU for Finalization PDU: {:?}",
-                compression_flags
-            );
-        }
-
-        share_data_pdu
-    } else {
-        panic!(
-            "Got unexpected Share Control PDU while was expected Data with Finalization PDU: {:?}",
-            share_control_header.share_control_pdu
-        );
-    }
-}
-
-fn encode_and_write_finalization_pdu(
-    pdu: rdp::ShareDataPdu,
-    initiator_id: u16,
-    channel_id: u16,
-    mut stream: impl io::Write,
-) {
-    let share_data_header = rdp::ShareDataHeader::new(
-        pdu,
-        rdp::StreamPriority::Medium,
-        rdp::CompressionFlags::empty(),
-        rdp::CompressionType::K8,
-    );
-
-    let share_control_header = rdp::ShareControlHeader::new(
-        rdp::ShareControlPdu::Data(share_data_header),
-        SERVER_PDU_SOURCE,
-        SHARE_ID,
-    );
-    encode_and_write_send_data_context_pdu(share_control_header, initiator_id, channel_id, &mut stream);
 }
 
 fn read_stream_buffer(stream: &mut impl io::Read) -> BytesMut {
